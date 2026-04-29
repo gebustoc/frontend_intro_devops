@@ -1,31 +1,28 @@
-# ============================================================
-# Dockerfile - Frontend Angular
-# Experiencia 2 - Introduccion a Herramientas DevOps
-#
-# IMPORTANTE: Este Dockerfile esta pensado para DESARROLLO.
-# Levanta `ng serve` dentro del contenedor con hot-reload.
-# ============================================================
-
-# 1) Imagen base Node (Angular CLI necesita Node para compilar)
-FROM node:20-alpine
-
-# 2) Carpeta de trabajo
+# ---------- ETAPA 1: builder ----------
+FROM node:20-alpine AS builder
 WORKDIR /app
-
-# 3) Copiamos package*.json y aprovechamos cache
 COPY package*.json ./
 
-# 4) Instalamos TODAS las dependencias (incluidas dev: Angular CLI)
-RUN npm install
+# OJO: aqui SI necesitamos devDependencies (Angular CLI), por lo
+# tanto NO se usa --omit=dev en esta etapa.
+RUN if [ -f package-lock.json ]; then \
+      npm ci; \
+    else \
+      echo ">>> AVISO: sin package-lock.json, usando npm install"; \
+      npm install; \
+    fi
 
-# 5) Copiamos el resto del proyecto
 COPY . .
+RUN npm run build && \
+    mkdir -p /app/build-output && \
+    ( cp -r /app/dist/*/browser/* /app/build-output/ 2>/dev/null || \
+      cp -r /app/dist/*/* /app/build-output/ )
 
-# 6) Puerto por defecto de `ng serve`
-EXPOSE 4200
-
-# 7) Arrancamos el servidor de desarrollo.
-#    --host 0.0.0.0 permite que el puerto sea accesible desde fuera del contenedor.
-#    --poll 2000    fuerza al compilador a detectar cambios en volumenes montados
-#                    (necesario en Windows/Mac con Docker Desktop).
-CMD ["npm", "run", "start"]
+# ---------- ETAPA 2: runtime ----------
+FROM nginxinc/nginx-unprivileged:1.27-alpine AS runtime
+COPY --chown=nginx:nginx nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=builder --chown=nginx:nginx /app/build-output/ /usr/share/nginx/html/
+USER nginx
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:8080/ > /dev/null || exit 1
